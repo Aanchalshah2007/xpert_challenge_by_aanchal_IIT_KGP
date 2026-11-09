@@ -6,4 +6,4 @@ if [ "$#" -ne 2 ]; then
   echo "usage: ./run.sh <input_dir> <output.json>" >&2
   exit 2
 fi
-python3 "$(dirname "$0")/solution.py" "$1" "$2"
+PYTHONPATH="$(cd "$(dirname "$0")" && pwd)${PYTHONPATH:+:$PYTHONPATH}" python3 -m coldstart.main "$1" "$2"

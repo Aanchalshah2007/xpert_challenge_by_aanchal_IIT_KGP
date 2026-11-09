@@ -5,3 +5,6 @@ usage.jsonl
 output.json
 .env
 __pycache__/
+eval/runs/
+.llm_cache/
+*.tmp

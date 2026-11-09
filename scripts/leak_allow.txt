@@ -1,0 +1,13 @@
+# Generic words that also occur as a name/title word in the data. Reviewed: dictionary words,
+# kinship terms or chat-title words that carry no identity. Never add a proper name here.
+home
+office
+work
+company
+trading
+traders
+never
+carpool
+maid
+bhabhi
+chacha
