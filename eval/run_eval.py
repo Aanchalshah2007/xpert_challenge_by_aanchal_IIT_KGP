@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -23,11 +24,12 @@ import check  # noqa: E402
 import help_goal_score  # noqa: E402
 
 HISTORY = ROOT / "eval" / "runs" / "history.jsonl"
+STATS = ROOT / "eval" / "runs" / "stats.json"
 USAGE = Path("usage.jsonl")  # llm.py writes it in the working directory
 
 
 def _usage_from(offset: int) -> Dict[str, float]:
-    tot = {"calls": 0, "prompt": 0, "completion": 0}
+    tot = {"calls": 0, "failed_attempts": 0, "prompt": 0, "completion": 0}
     if USAGE.exists():
         with open(USAGE, "rb") as f:
             f.seek(offset)
@@ -35,6 +37,9 @@ def _usage_from(offset: int) -> Dict[str, float]:
                 try:
                     r = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if r.get("error") is not None:
+                    tot["failed_attempts"] += 1
                     continue
                 tot["calls"] += 1
                 tot["prompt"] += r.get("prompt_tokens") or 0
@@ -59,7 +64,10 @@ def main() -> int:
 
     offset = USAGE.stat().st_size if USAGE.exists() else 0
     t0 = time.time()
-    r = subprocess.run([str(ROOT / "run.sh"), args.data, args.out], capture_output=True, text=True)
+    if STATS.exists():
+        STATS.unlink()
+    env = dict(os.environ, COLDSTART_STATS=str(STATS))
+    r = subprocess.run([str(ROOT / "run.sh"), args.data, args.out], capture_output=True, text=True, env=env)
     seconds = round(time.time() - t0, 1)
     sys.stderr.write(r.stderr[-3000:])
     if r.returncode != 0:
@@ -89,6 +97,8 @@ def main() -> int:
         "possible": sum(check.POINTS[k] for k, v in scores.items() if v is not None),
         "usage": usage,
         "tokens_per_1k_msgs": round(1000 * tokens / len(messages), 1) if messages else None,
+        "model": os.environ.get("LLM_MODEL"),
+        "stages": json.loads(STATS.read_text())["stages"] if STATS.exists() else {},
     }
     prev = _last()
 
@@ -112,6 +122,9 @@ def main() -> int:
     print(f"\nruntime {seconds}s | LLM calls {usage['calls']} | tokens {usage['prompt']}+{usage['completion']}={tokens}{dt}"
           f" | {rec['tokens_per_1k_msgs']} tokens / 1k msgs")
 
+    for name, t in rec["stages"].items():
+        print(f"  stage {name:<8} calls {t['calls']:>4} | tokens {t['prompt']}+{t['completion']} | "
+              f"failed prompts {t.get('failed_prompts', 0)} | models {','.join(t.get('models', []))}")
     HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with open(HISTORY, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")

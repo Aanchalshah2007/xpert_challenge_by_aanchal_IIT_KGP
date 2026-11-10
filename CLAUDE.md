@@ -45,4 +45,7 @@ Official rules: README.md and check.py. check.py is the source of truth for scor
 
 ## Workflow
 - Stop at each checkpoint and wait for my go-ahead.
+- NEVER run git add, commit, push or any other git write command. The user commits manually. Read-only git (status, diff, log) is fine.
+- LLM variables live in .env (gitignored). For commands that need the LLM, prefix `set -a; source .env; set +a;`.
+  Never print, log or echo the key. The pipeline itself must only read environment variables, never .env.
 - After any pipeline change: run ./run.sh data/dev out.json && python3 check.py data/dev out.json, and report the score delta plus token delta.

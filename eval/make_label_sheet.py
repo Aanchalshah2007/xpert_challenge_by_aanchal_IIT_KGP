@@ -4,7 +4,7 @@
     python3 eval/make_label_sheet.py data/dev [--goals 20]
 
 Help: every OPEN loop in the dev key, with ±3 messages of context and a blank help field.
-Goals: Arjun's own messages that sound like plans or aims (keyword search, no LLM).
+Goals: the user's (ME's) own messages that sound like plans or aims (keyword search, no LLM).
 Fill it in, then run eval/labels_from_sheet.py to produce labels/help.json and labels/goals.json.
 Lives in eval/ because it reads the answer key; the pipeline never does.
 """
@@ -72,7 +72,7 @@ def main() -> int:
         "",
         "## Help (open loops from the dev key)",
         "",
-        "help: one of `assist` (I can take the next step for Arjun), `remind` (only Arjun can act; nudge him),",
+        "help: one of `assist` (I can take the next step for the user (ME)), `remind` (only the user (ME) can act; nudge them),",
         "`leave` (stay out: private, sensitive, or nothing useful to do). `why`: a few words. Blank = skipped.",
         "",
     ]
@@ -95,7 +95,7 @@ def main() -> int:
         ]
 
     out += [
-        "## Goals (Arjun's own messages that sound like plans or aims)",
+        "## Goals (the user's (ME's) own messages that sound like plans or aims)",
         "",
         "keep: `y` / `n`. area: self, spouse, kids, parents, work, friends, experiences, finances, health, home.",
         "type: habit, milestone, experience. horizon: 3mo, 1yr, 3yr, 5yr.",

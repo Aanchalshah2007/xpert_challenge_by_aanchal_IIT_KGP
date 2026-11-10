@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
-from . import assemble, chats, ingest, orgs, people, profile
+from . import assemble, chats, config, decide, ingest, llm_client, loops, orgs, people, profile
 from .util import log, read_jsonl, write_json_atomic
 
 DEADLINE_S = float(os.environ.get("COLDSTART_DEADLINE_S", 25 * 60))
@@ -71,6 +71,21 @@ class Run:
     def s_people(self) -> None:
         self.parts["people"] = people.build(self.ctx["profile"], self.ctx["orgs"], self.ctx["data"].seed)
 
+    def s_loops(self) -> None:
+        if not llm_client.available():
+            log("loops: LLM_BASE_URL / LLM_API_KEY / LLM_MODEL not set, skipping")
+            return
+        client = self.ctx.setdefault("llm", llm_client.LLM(concurrency=config.LLM_CONCURRENCY, timeout=config.LLM_TIMEOUT_S))
+        raw = loops.extract(self.ctx["data"], client)
+        self.parts["open_loops"] = decide.decide(raw, self.ctx["data"])
+
+    def write_stats(self) -> None:
+        """Token use per stage, for eval/run_eval.py. Only when COLDSTART_STATS names a file."""
+        path = os.environ.get("COLDSTART_STATS")
+        client = self.ctx.get("llm")
+        if path and client is not None:
+            write_json_atomic(Path(path), client.summary(len(self.raw_messages)))
+
     def stages(self) -> List[Tuple[str, Callable[[], None], bool]]:
         # (name, fn, writes output)
         return [
@@ -78,6 +93,7 @@ class Run:
             ("profile", self.s_profile, False),
             ("orgs+chats", self.s_orgs, True),
             ("people", self.s_people, True),
+            ("loops+decide", self.s_loops, True),
         ]
 
     def run(self) -> None:
@@ -131,6 +147,7 @@ def main(argv: List[str]) -> int:
         run.run()
     finally:
         run.finalise()
+        run.write_stats()
         timer.cancel()
     return 0
 

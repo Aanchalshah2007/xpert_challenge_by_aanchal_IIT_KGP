@@ -55,9 +55,36 @@ NAME_STOPWORDS = {
     "community", "club", "forum", "network", "members", "1", "2", "3", "4", "5", "c1", "c2", "where", "heart", "love",
 }
 
-# Request / commitment cues (Phase 2 loop candidates).
-REQUEST = _words("pls", "plz", "please", "can you", "could you", "would you", "will you", "possible to", "kindly",
-                 "need you to", "let me know", "lmk", "send", "share", "confirm", "pay", "transfer", "decide",
-                 "kar do", "kar dena", "bhej do", "bhejo", "batao", "bata do")
-COMMIT = _words("will do", "i'?ll", "i will", "let me", "on it", "will send", "will share", "will check", "will call",
-                "kar dunga", "kar denge", "bhej dunga", "bhejta", "dekhta", "reverting", "will revert", "tomorrow")
+# Loop candidates (high recall; the LLM decides what is real).
+REQUEST = _words("pls", "plz", "pl", "please", "kindly", "can (?:you|u|we)", "could (?:you|u|we)", "would (?:you|u)",
+                 "will (?:you|u)", "possible to", "need (?:you|u) to", "need to", "i need", "we need", "let me know",
+                 "lmk", "let'?s", "lets", "shall (?:we|i)", "should (?:i|we)", "do you", "did you", "have you", "any update",
+                 "reminder", "remind", "required", "asap", "urgent", "waiting", "follow ?up", "help",
+                 "kar do", "kar dena", "karo", "karna", "karwa", "bhej do", "bhejo", "batao", "bata do", "dena", "dedo",
+                 "chahiye", "lena", "le lo", "dekh lo", "karte hai", "karenge", "go ahead", "(?:you|u|we) can")
+# Quotes, price lists and numbered task lists: things someone now has to act on.
+QUOTE = _words("quotation", "quote", "estimate", "invoice", "proforma", "pi", "po", "per (?:kg|piece|pc|unit|sq ?ft|month)",
+               "gst", "advance", "balance due")
+TASK_LIST = re.compile(r"(?:^|\n|\s)(?:1[.)]|[-•*]\s).{3,}(?:\n|\s)(?:2[.)]|[-•*]\s)", re.DOTALL)
+# Imperative verbs at the start of a message: "Pay 3500", "Order one more", "Send your address".
+IMPERATIVE = re.compile(
+    r"^(?:\W*(?:hi|hey|hello|ok|okay|and|also|so|then|sir|ma'?am|bhai|bhaiya|didi|ji)\W+)*"
+    r"(?:pay|send|share|order|buy|get|book|call|text|message|ask|check|confirm|decide|fix|arrange|bring|transfer|"
+    r"forward|sign|submit|approve|review|update|invite|schedule|reschedule|cancel|renew|collect|drop|pick|tell|"
+    r"inform|find|figure|discuss|meet|reply|revert|clean|repair|replace|return|deliver)\b",
+    re.IGNORECASE,
+)
+COMMIT = _words("will do", "i'?ll", "ill", "i will", "we'?ll", "we will", "let me", "on it", "will \\w+", "shall \\w+",
+                "going to", "gonna", "reverting", "will revert", "get back", "noted", "done by", "by (?:mon|tues|wednes|"
+                "thurs|fri|satur|sun)day", "kar dunga", "kar dungi", "kar denge", "bhej dunga", "bhej dungi", "bhejta",
+                "bhejti", "dekhta", "dekhti", "karta hu", "karti hu", "dunga", "dungi")
+# Payment requests (with MONEY below): media the user sends right after one is closure evidence.
+PAY = _words("pay", "paid", "payment", "transfer", "upi", "gpay", "paytm", "phonepe", "neft", "imps", "reimburse",
+             "fees?", "dues?", "bhej do paise", "paise")
+# Dates, times and money: deadlines, meetings and payments.
+TIME_REF = _words("today", "tonight", "tomorrow", "tmrw", "tmr", "kal", "aaj", "parso", "this week", "next week",
+                  "weekend", "(?:mon|tues|wednes|thurs|fri|satur|sun)day", "mon|tue|wed|thu|fri|sat|sun",
+                  "\\d{1,2}(?::\\d{2})? ?(?:am|pm)", "\\d{1,2}(?:st|nd|rd|th)?\\s(?:jan|feb|mar|apr|may|jun|jul|aug|sep|"
+                  "oct|nov|dec)\\w*", "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\w*\\s\\d{1,2}", "eod", "deadline",
+                  "due", "before", "by")
+MONEY = re.compile(r"(?:₹|rs\.?|inr)\s?\d|\d[\d,]{2,}\s?(?:/-|rs|inr|k|lakh|lakhs|cr)?\b", re.IGNORECASE)
