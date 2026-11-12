@@ -91,25 +91,34 @@ class Decide(unittest.TestCase):
         self.assertEqual(decide.status(_raw(p_open=0.3, p_done=0.7)), "done")
         self.assertEqual(decide.status(_raw(p_open=0.2, p_done=0.1, p_dropped=0.7)), "dropped")
 
-    def test_help_defaults_to_leave(self):
-        self.assertEqual(decide.help_for(_raw(), T0)["action"], "leave")
+    def test_someone_elses_move_is_leave_unless_overdue_followup(self):
+        self.assertEqual(decide.ownership_help(_raw(owner="P1", owner_is_me=False), T0)["action"], "leave")
+        f = _raw(owner="P1", owner_is_me=False, type="followup")
+        self.assertEqual(decide.ownership_help(f, T0)["action"], "leave")  # no due date: never overdue
+        self.assertEqual(decide.ownership_help(dict(f, due="2000-01-01"), T0)["action"], "remind")  # past due
+        self.assertEqual(decide.ownership_help(dict(f, due="2030-01-02"), T0)["action"], "leave")  # not yet due
+
+    def test_question_the_user_sent_waits_on_the_other_person(self):
+        q = _raw(type="question", p_assist=0.7, next="Draft it")  # model said owner ME
+        self.assertEqual(decide.ownership_help(q, T0, src_by_me=True)["action"], "leave")
+        self.assertEqual(decide.ownership_help(dict(q, due="2000-01-01"), T0, src_by_me=True)["action"], "remind")
+        self.assertEqual(decide.ownership_help(q, T0, src_by_me=False)["action"], "assist")  # asked of the user
 
     def test_assist_needs_every_gate(self):
-        ok = _raw(p_assist=0.7, p_leave=0.3, next="Draft the reply")
-        self.assertEqual(decide.help_for(ok, T0)["action"], "assist")
+        ok = _raw(p_assist=0.1, p_leave=0.8, next="Draft the reply")  # gates, not ratios
+        self.assertEqual(decide.ownership_help(ok, T0)["action"], "assist")
         for bad in ({"sensitive": True}, {"private": True}, {"reversible": False}, {"owner": "P1"}, {"next": None}):
-            self.assertNotEqual(decide.help_for(dict(ok, **bad), T0)["action"], "assist", bad)
+            self.assertNotEqual(decide.ownership_help(dict(ok, **bad), T0)["action"], "assist", bad)
 
-    def test_remind_only_when_user_must_act(self):
-        r = _raw(needs_me_only=True, p_remind=0.7, p_leave=0.3, due="2030-01-02")
-        h = decide.help_for(r, T0)
+    def test_users_own_move_is_remind_when_assist_is_unsafe(self):
+        r = _raw(needs_me_only=True, p_remind=0.1, p_leave=0.8, due="2030-01-02")  # probabilities don't gate it
+        h = decide.ownership_help(r, T0)
         self.assertEqual(h["action"], "remind")
         self.assertEqual(h["remind_at"], "2030-01-02T10:00:00+05:30")
-        self.assertEqual(decide.help_for(dict(r, needs_me_only=False), T0)["action"], "leave")
-        self.assertEqual(decide.help_for(dict(r, p_remind=0.5, p_leave=0.3), T0)["action"], "leave")  # 0.5 < 0.6
+        self.assertEqual(decide.ownership_help(dict(r, needs_me_only=False, next="Draft it"), T0)["action"], "assist")
 
     def test_remind_without_due_is_next_morning(self):
-        h = decide.help_for(_raw(needs_me_only=True, p_remind=0.8, p_leave=0.2), T0)
+        h = decide.ownership_help(_raw(needs_me_only=True, p_remind=0.8, p_leave=0.2), T0)
         self.assertTrue(h["remind_at"].endswith("T10:00:00+05:30"))
 
 

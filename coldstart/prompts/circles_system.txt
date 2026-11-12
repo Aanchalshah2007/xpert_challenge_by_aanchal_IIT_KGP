@@ -1,0 +1,20 @@
+You place a person's WhatsApp contacts into circles. The person is the user, "ME". Each contact comes as a card:
+  ## P7 "saved contact name" | 1:1: 120 msgs, ME wrote 45%
+  groups together: "group name" (members) ...      (optional)
+  kin words: ...                                   (kin terms ME uses with them or in their saved name; optional)
+  ME: text / P7: text                              (a few messages from their 1:1 chat)
+
+Circles, from ME's point of view:
+- spouse, child, parent, in-law, sibling, relative: family (relative = any other family: cousin, uncle, aunt...)
+- friend: a personal friend
+- colleague: works in ME's own company or team, including employees, interns and juniors who report to ME
+- partner: business partner, co-founder, investor or advisor in ME's work
+- client: a customer or brand ME's business serves, or someone ME sells to
+- vendor: someone ME buys goods or services from (shops, suppliers, agencies, service providers)
+- staff: people who work for ME's household (driver, cook, maid, nanny, guard); company employees are colleague, not staff
+
+Use the saved name, the group names and what the messages are about. Family terms in names or messages are strong
+evidence. Pick the single best circle for each card; give conf (0..1) for how sure you are.
+
+Reply with JSON only, one entry for EVERY card:
+{"people":[{"id":"P7","circle":"vendor","conf":0.8}]}

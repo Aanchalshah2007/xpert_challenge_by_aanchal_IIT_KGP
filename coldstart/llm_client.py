@@ -8,6 +8,7 @@ per-stage token tally (from usage.jsonl) and an opt-in disk cache for dev runs.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import socket
 import json
 import os
@@ -19,22 +20,41 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import llm  # noqa: E402
 
+from .spend import Ledger, SpendCapError  # noqa: E402
 from .util import log  # noqa: E402
 
 USAGE_FILE = Path("usage.jsonl")  # llm.py appends here, relative to the working directory
 RETRYABLE_HTTP = {408, 409, 425, 429, 500, 502, 503, 504}  # overload / transient; anything else 4xx is final
 OVERLOAD_HTTP = {429, 503}
+JSON_400_TO_DISABLE = 3  # JSON-mode 400s in a row before JSON mode is dropped for the run
 OVERLOADS_TO_THROTTLE = 3  # this many overload errors in a row halve the concurrency
 QUOTA_GIVE_UP_S = 120  # a 429 asking us to wait longer than this means the quota is spent: stop calling
 # "Please retry in 17h31m41.6s" (Gemini), "Please try again in 7.5s" / "in 1m2.5s" (Groq)
 _RETRY_IN = re.compile(r"(?:retry|try again) in (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s", re.IGNORECASE)
-_DAILY = re.compile(r"per ?day|PerDay|daily|\bRPD\b|\bTPD\b", re.IGNORECASE)
+_DAILY = re.compile(r"per[ -]?day|PerDay|daily|\bRPD\b|\bTPD\b", re.IGNORECASE)
 REASK = "Your previous reply was not valid JSON ({err}). Reply again with ONLY the JSON, no prose, no code fences."
+
+
+def provider_extra() -> Optional[Dict[str, Any]]:
+    """Body fields for the configured provider (by LLM_BASE_URL host), e.g. its reasoning-effort setting."""
+    from urllib.parse import urlparse
+
+    from . import config
+    host = (urlparse(os.environ.get("LLM_BASE_URL", "")).hostname or "").lower()
+    for h, extra in config.LLM_EXTRA_BY_HOST.items():
+        if host == h or host.endswith("." + h):
+            return extra
+    return None
+
+
+def _host() -> str:
+    from urllib.parse import urlparse
+    return (urlparse(os.environ.get("LLM_BASE_URL", "")).hostname or "").lower()
 
 
 def available() -> bool:
@@ -94,10 +114,20 @@ class LLM:
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
-        cache = cache_dir or os.environ.get("COLDSTART_LLM_CACHE")  # dev only; unset for cost runs
+        cache = cache_dir
+        if cache is None and os.environ.get("COLDSTART_LLM_CACHE"):  # dev only; unset for cost runs
+            # One sub-folder per provider host, so replies from one gateway are never reused for another.
+            cache = str(Path(os.environ["COLDSTART_LLM_CACHE"]) / (_host() or "unknown-host"))
         self.cache_dir: Optional[Path] = Path(cache) if cache else None
+        self.ledger: Optional[Ledger] = Ledger.from_env()  # dev only: paid-run ledger + hard spend cap
         self._chat = chat_fn or llm.chat
-        self._json_mode = True  # dropped after the first 4xx that looks like "unsupported"
+        try:  # pass a meta dict (finish_reason, cost, ...) to chat functions that take one
+            self._chat_meta = "meta" in inspect.signature(self._chat).parameters
+        except (TypeError, ValueError):
+            self._chat_meta = False
+        self._tls = threading.local()  # per-thread: finish_reason of this thread's last completed call
+        self._json_mode = True  # off for the whole run only after JSON_400_TO_DISABLE such 400s in a row
+        self._json_400s = 0
         self._lock = threading.Lock()
         # Adaptive limit on calls in flight: halved after repeated overload errors (8 -> 4 -> 2).
         self._slots = threading.Condition()
@@ -171,40 +201,77 @@ class LLM:
 
     # ---- single call with retries + cache
 
-    def complete(self, messages: List[dict], max_tokens: Optional[int] = None, json_mode: bool = True) -> str:
+    def complete(self, messages: List[dict], max_tokens: Optional[int] = None, json_mode: bool = True,
+                 sample: int = 0) -> str:
+        """sample: index of a repeated identical call (consensus); only the dev cache key sees it, not the request."""
         key = None
         if self.cache_dir is not None:
             parts: List[Any] = [os.environ.get("LLM_MODEL"), messages, max_tokens, json_mode]
             if self.extra:
                 parts.append(self.extra)  # only when set, so keys from before `extra` existed stay valid
+            if sample:
+                parts.append({"sample": sample})
             key = hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
             hit = self.cache_dir / f"{key}.txt"
             if hit.exists():
+                side = self.cache_dir / f"{key}.meta.json"
+                self._tls.finish = json.loads(side.read_text())["finish_reason"] if side.exists() else "unknown"
                 return hit.read_text(encoding="utf-8")
         last: Optional[Exception] = None
         attempt = 0
+        call_json = json_mode  # this call's JSON mode; a 400 drops it for this call only
         while attempt <= self.retries:
             if self.exhausted:
                 raise RuntimeError(f"LLM quota exhausted earlier in this run: {self.exhausted}")
             try:
-                fmt = {"type": "json_object"} if (json_mode and self._json_mode) else None
+                fmt = {"type": "json_object"} if (call_json and self._json_mode) else None
                 self._count(self.calls)
                 with self._slot():
-                    kw = {"extra": self.extra} if self.extra else {}
-                    text = self._chat(messages, max_tokens=max_tokens, response_format=fmt, timeout=self.timeout, **kw)
+                    kw: Dict[str, Any] = {"extra": self.extra} if self.extra else {}
+                    meta: Dict[str, Any] = {}
+                    if self.ledger is not None:
+                        text = self._paid_call(messages, max_tokens, fmt, kw, meta)
+                    else:
+                        if self._chat_meta:
+                            kw["meta"] = meta
+                        text = self._chat(messages, max_tokens=max_tokens, response_format=fmt, timeout=self.timeout,
+                                          **kw)
+                self._tls.finish = meta.get("finish_reason")
                 self._overloaded(False)
+                if fmt is not None:
+                    with self._lock:
+                        self._json_400s = 0
                 if self.cache_dir is not None and key is not None and text is not None:
                     self.cache_dir.mkdir(parents=True, exist_ok=True)
                     (self.cache_dir / f"{key}.txt").write_text(text, encoding="utf-8")
+                    (self.cache_dir / f"{key}.meta.json").write_text(json.dumps({"finish_reason": self._tls.finish}))
                 return text
+            except SpendCapError as e:
+                with self._lock:
+                    if not self.exhausted:
+                        self.exhausted = str(e)
+                        log(f"llm[{self._stage}]: {e}; no more calls this run")
+                last = e
+                break
             except Exception as e:  # HTTP errors, timeouts, connection resets, bad payloads
                 last = e
                 code = getattr(e, "code", None)
-                if code == 400 and self._json_mode and json_mode:
-                    self._json_mode = False  # provider rejects response_format; retry without it (free retry)
+                if code == 400 and call_json and self._json_mode:
+                    # Can be "response_format unsupported" or the model's own JSON failing the provider's check.
+                    # Retry this call once without JSON mode; later calls keep it, unless it keeps failing.
+                    call_json = False
+                    with self._lock:
+                        self._json_400s += 1
+                        if self._json_400s >= JSON_400_TO_DISABLE:
+                            self._json_mode = False
+                            log(f"llm[{self._stage}]: {self._json_400s} JSON-mode 400s in a row, JSON mode off "
+                                f"for the rest of this run")
+                        else:
+                            log(f"llm[{self._stage}]: 400 with JSON mode ({_describe(e)}); retrying this call "
+                                f"without it")
                     continue
-                if code in (401, 403):
-                    with self._lock:  # bad key or blocked client: every later call would fail the same way
+                if code in (401, 403, 404):
+                    with self._lock:  # bad key, blocked client or unknown model: every later call fails the same way
                         if not self.exhausted:
                             self.exhausted = _describe(e)
                             log(f"llm[{self._stage}]: access refused, no more calls this run ({self.exhausted})")
@@ -227,11 +294,29 @@ class LLM:
                 attempt += 1
         raise RuntimeError(f"LLM call failed after retries: {_describe(last)}")
 
-    def ask_json(self, prompt: str, system: Optional[str] = None, max_tokens: Optional[int] = None) -> Any:
+    def _paid_call(self, messages: List[dict], max_tokens: Optional[int], fmt: Optional[dict],
+                   kw: Dict[str, Any], meta: Dict[str, Any]) -> str:
+        """One call under the spend ledger: reserve the worst case, call, record the provider's own cost."""
+        assert self.ledger is not None
+        est = Ledger.estimate(messages, max_tokens)
+        self.ledger.reserve(est)  # raises SpendCapError before anything is sent
+        # Prompt hash: lets eval tie each ledger line (provider, cost) to the windows in that prompt.
+        meta["prompt_sha"] = hashlib.sha256(json.dumps(messages, sort_keys=True).encode()).hexdigest()[:16]
+        try:
+            text = self._chat(messages, max_tokens=max_tokens, response_format=fmt, timeout=self.timeout, meta=meta,
+                              **kw)
+        except Exception as e:
+            self.ledger.settle(est, self._stage, meta, error=_describe(e))
+            raise
+        self.ledger.settle(est, self._stage, meta)
+        return text
+
+    def ask_json(self, prompt: str, system: Optional[str] = None, max_tokens: Optional[int] = None,
+                 sample: int = 0) -> Any:
         """One prompt -> parsed JSON, with one re-ask on bad JSON. None on failure (caller falls back)."""
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
         try:
-            text = self.complete(messages, max_tokens=max_tokens)
+            text = self.complete(messages, max_tokens=max_tokens, sample=sample)
             try:
                 return parse_json(text)
             except ValueError as err:
@@ -239,7 +324,7 @@ class LLM:
                     {"role": "assistant", "content": text or ""},
                     {"role": "user", "content": REASK.format(err=err)},
                 ]
-                return parse_json(self.complete(messages, max_tokens=max_tokens))
+                return parse_json(self.complete(messages, max_tokens=max_tokens, sample=sample))
         except (RuntimeError, ValueError) as e:
             self._count(self.failures)
             if isinstance(e, ValueError):
@@ -247,12 +332,53 @@ class LLM:
             log(f"llm[{self._stage}]: giving up on one prompt: {e}")
             return None
 
-    def map_json(self, prompts: List[str], system: Optional[str] = None, max_tokens: Optional[int] = None) -> List[Any]:
+    def ask_json_ex(self, prompt: str, system: Optional[str] = None,
+                    max_tokens: Optional[int] = None) -> Tuple[Any, bool]:
+        """Like ask_json, but returns (parsed or None, truncated). A reply cut at max_tokens is not re-asked (the
+        re-ask would be cut too): the caller can split the work and retry; the parsed value is the repaired part."""
+        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+        try:
+            text = self.complete(messages, max_tokens=max_tokens)
+        except RuntimeError as e:
+            self._count(self.failures)
+            log(f"llm[{self._stage}]: giving up on one prompt: {e}")
+            return None, False
+        finish = getattr(self._tls, "finish", None)
+        if finish == "length" or (finish == "unknown" and _looks_cut(text)):
+            try:
+                return parse_json(text), True
+            except ValueError:
+                return None, True
+        try:
+            return parse_json(text), False
+        except ValueError as err:  # not cut, just bad JSON: one re-ask, as ask_json does
+            again = messages + [{"role": "assistant", "content": text or ""},
+                                {"role": "user", "content": REASK.format(err=err)}]
+            try:
+                return parse_json(self.complete(again, max_tokens=max_tokens)), False
+            except (RuntimeError, ValueError) as e:
+                self._count(self.failures)
+                if isinstance(e, ValueError):
+                    self._count(self.json_failures)
+                log(f"llm[{self._stage}]: giving up on one prompt: {e}")
+                return None, False
+
+    def map_json_ex(self, prompts: List[str], system: Optional[str] = None,
+                    max_tokens: Optional[int] = None) -> List[Tuple[Any, bool]]:
+        """map_json with a truncation flag per prompt."""
+        if not prompts:
+            return []
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            return list(pool.map(lambda p: self.ask_json_ex(p, system=system, max_tokens=max_tokens), prompts))
+
+    def map_json(self, prompts: List[str], system: Optional[str] = None, max_tokens: Optional[int] = None,
+                 sample: int = 0) -> List[Any]:
         """Run prompts concurrently; results in input order, None where a prompt failed."""
         if not prompts:
             return []
         with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            return list(pool.map(lambda p: self.ask_json(p, system=system, max_tokens=max_tokens), prompts))
+            return list(pool.map(lambda p: self.ask_json(p, system=system, max_tokens=max_tokens, sample=sample),
+                                 prompts))
 
     def summary(self, n_messages: int) -> Dict[str, Any]:
         total = sum(t["prompt"] + t["completion"] for t in self.tokens.values())
@@ -264,6 +390,17 @@ class LLM:
             "failures": self.failures,
             "json_failures": self.json_failures,
         }
+
+
+def _looks_cut(text: Optional[str]) -> bool:
+    """For a cached reply with no recorded finish_reason: not valid JSON and not ending like a JSON value."""
+    if text is None:
+        return False
+    try:
+        json.loads(_FENCE.sub("", text.strip()))
+        return False
+    except json.JSONDecodeError:
+        return not _FENCE.sub("", text.strip()).endswith(("}", "]"))
 
 
 def _quota_wait(e: Exception) -> Optional[float]:

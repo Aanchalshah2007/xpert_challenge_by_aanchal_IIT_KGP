@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+from . import config
 from . import lexicons as lx
 from .orgs import Orgs
 from .profile import ChatProfile, PersonProfile, Profile
@@ -39,8 +40,10 @@ def _spouse(profile: Profile, family_people: set) -> Optional[str]:
     return ranked[0].pid if ranked[0].pid in family_people else None
 
 
-def build(profile: Profile, orgs: Orgs, seed: dict) -> List[dict]:
+def build(profile: Profile, orgs: Orgs, seed: dict, llm: Optional[Dict[str, Tuple[str, float]]] = None) -> List[dict]:
+    """llm: person id -> (circle, conf) from circles.py; used over the rules when conf >= CIRCLES_MIN_CONF."""
     pinned: Dict[str, str] = dict(seed.get("circles") or {})
+    llm = llm or {}
     chats = profile.chats
     seed_orgs = set(orgs.ids_of("seed"))
     in_kind: Dict[str, Dict[str, List[str]]] = {}
@@ -79,6 +82,12 @@ def build(profile: Profile, orgs: Orgs, seed: dict) -> List[dict]:
             circle = "staff"
         else:
             circle = _from_cues(p)
+        if pid not in pinned and pid in llm and llm[pid][1] >= config.CIRCLES_MIN_CONF:
+            said = llm[pid][0]
+            if said == "family":  # family, but which kind: the kin rules know better, else the catch-all
+                circle = circle if circle in ("spouse", "child", "parent", "in-law", "sibling", "relative") else "relative"
+            else:
+                circle = said
 
         # Links only where we are fairly sure (wrong links dilute the org score).
         if circle in ("colleague", "partner"):

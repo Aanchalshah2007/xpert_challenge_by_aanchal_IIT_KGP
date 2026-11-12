@@ -44,13 +44,13 @@ def reasons_for(m: dict, me_pattern: Optional[Pattern[str]] = None) -> List[str]
     r = []
     if me_pattern is not None and m["sender_id"] != "ME" and me_pattern.search(body):
         r.append("addressed")  # someone uses the user's name: likely talking to them
-    if lx.REQUEST.search(body):
+    if lx.REQUEST.search(body) or lx.REQUEST_INDIC.search(body):
         r.append("request")
     if lx.IMPERATIVE.search(body):
         r.append("imperative")
-    if "?" in body:
+    if "?" in body or lx.QUESTION_INDIC.search(body):
         r.append("question")
-    if lx.COMMIT.search(body):
+    if lx.COMMIT.search(body) or lx.COMMIT_INDIC.search(body):
         r.append("commit")
     if lx.QUOTE.search(body):
         r.append("quote")
@@ -73,7 +73,7 @@ def find(data: Data) -> Dict[str, List[str]]:
     for m in data.messages:
         if m["ts"] < data.loop_from:
             continue
-        r = reasons_for(m, data.me_pattern)
+        r = reasons_for(m, data.me_pattern if config.LOOPS_USE_ME_NAME else None)
         if r:
             out[m["id"]] = r
     return out

@@ -64,16 +64,19 @@ def score_goals(out: dict, labels: List[dict], seed: dict) -> float:
 
 
 def run(data_dir: str, out_path: str) -> Dict[str, Optional[float]]:
+    return run_obj(data_dir, json.loads(Path(out_path).read_text(encoding="utf-8")))
+
+
+def run_obj(data_dir: str, out: dict) -> Dict[str, Optional[float]]:
     folder = Path(data_dir)
     _, _, seed, answers = check.load_input(folder)
-    out = json.loads(Path(out_path).read_text(encoding="utf-8"))
     help_labels = _load(folder / "labels" / "help.json")
     goal_labels = _load(folder / "labels" / "goals.json")
     return {
         "help": score_help(out, help_labels, answers) if help_labels else None,
         "goals": score_goals(out, goal_labels, seed) if goal_labels else None,
         "n_help_labels": len(help_labels or []),
-        "n_goal_labels": len(goal_labels or []),
+        "n_goals_labels": len(goal_labels or []),
     }
 
 

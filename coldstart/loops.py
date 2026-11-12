@@ -18,12 +18,29 @@ from .util import log, tokens
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYSTEM = (Path(__file__).parent / "prompts" / "loops_system.txt").read_text(encoding="utf-8")
+# Ablations (dev only, config.ABLATE): one sentence each, from the v2 prompt.
+_V1_FOLLOWUP = "- ME asks someone else to do something and is waiting on it (owner = that person's id) -> type followup\n"
+_DELEGATE = ("- ME delegates or asks someone else to do something (\"please ask\", \"pls check with ...\", \"send me ...\"): "
+             "the loop is owned by ME, type followup, because ME has to make sure it happens\n")
+_NO_LOOPS = '"No loops" is a normal and common answer for a window.\n'
+_BURST = ("Each separate request is its own loop, even when one person sends several in a row "
+          "(\"pay this\", \"book that\", \"also fix the fan\" = three loops).\n")
+if "delegate" in config.ABLATE:
+    assert _V1_FOLLOWUP in SYSTEM
+    SYSTEM = SYSTEM.replace(_V1_FOLLOWUP, _DELEGATE)
+if "burst" in config.ABLATE:
+    assert _NO_LOOPS in SYSTEM
+    SYSTEM = SYSTEM.replace(_NO_LOOPS, _NO_LOOPS + _BURST)
 TYPES = {"commitment", "followup", "deadline", "question"}
 MERGE_TITLE_JACCARD = 0.5
 
 
 def _when(ts: int, year: bool = False) -> str:
     return datetime.fromtimestamp(ts, IST).strftime("%a %d %b %Y %H:%M" if year else "%a %d %b %H:%M")
+
+
+def _clip(text: str) -> str:
+    return text[: config.MAX_MSG_CHARS] + "…" if len(text) > config.MAX_MSG_CHARS else text
 
 
 def _chat_header(data: Data, cid: str) -> str:
@@ -40,7 +57,7 @@ def build_prompts(data: Data, wins: List[Window], char_budget: Optional[int] = N
     prompts, maps = [], []
     for batch in _batches(data, wins, char_budget, per_call):
         today = f"Today is {_when(data.now, year=True)} (IST)."
-        if data.me_names:
+        if data.me_names and config.LOOPS_USE_ME_NAME:
             alias = " or ".join(f'"{n}"' for n in data.me_names)
             lines = [today, f"ME is the user, addressed as {alias}: messages that use this name are talking to ME.",
                      "Windows:"]
@@ -52,19 +69,50 @@ def build_prompts(data: Data, wins: List[Window], char_budget: Optional[int] = N
             wl = f"W{j}"
             local: Dict[str, str] = {}
             lines.append(f"\n## {wl}: {_chat_header(data, w.chat_id)}")
+            day = None
             for mid in w.msg_ids:
                 k += 1
                 m = data.by_id[mid]
                 local[f"m{k}"] = mid
-                text = m["text"].replace("\n", " ")
-                if len(text) > config.MAX_MSG_CHARS:
-                    text = text[: config.MAX_MSG_CHARS] + "…"
                 mark = "*" if mid in w.reasons else " "
-                lines.append(f"{mark}m{k} {_when(m['ts'])} {m['sender_id']}: {text}")
+                if config.PROMPT_COMPACT:
+                    text = _clip(" ".join(m["text"].split()))
+                    d, hm = _when(m["ts"]).rsplit(" ", 1)
+                    if d != day:
+                        lines.append(f"-- {d}")
+                        day = d
+                    lines.append(f"{mark}m{k} {hm} {m['sender_id']}: {text}")
+                else:  # v1 format, kept byte-identical for cache replay
+                    text = _clip(m["text"].replace("\n", " "))
+                    lines.append(f"{mark}m{k} {_when(m['ts'])} {m['sender_id']}: {text}")
             bmap[wl] = (w.wid, local)
         prompts.append("\n".join(lines))
         maps.append(bmap)
     return prompts, maps
+
+
+def split(data: Data, w: Window, budget: Optional[int] = None, tag: str = "") -> List[Window]:
+    """Cut a window larger than the prompt budget into pieces that fit, each carrying SPLIT_OVERLAP messages of
+    the previous one (the slice-tested set-up)."""
+    budget = budget or config.PROMPT_CHAR_BUDGET
+    sizes = [min(len(data.by_id[m]["text"]), config.MAX_MSG_CHARS) + 24 for m in w.msg_ids]
+    if sum(sizes) <= budget:
+        return [w]
+    pieces: List[Window] = []
+    start = 0
+    while start < len(w.msg_ids):
+        end, size = start, 0
+        while end < len(w.msg_ids) and (end == start or size + sizes[end] <= budget):
+            size += sizes[end]
+            end += 1
+        ids = w.msg_ids[start:end]
+        pieces.append(Window(wid=f"{w.wid}.{tag}{len(pieces) + 1}", chat_id=w.chat_id, msg_ids=ids,
+                             candidates=[c for c in w.candidates if c in ids],
+                             reasons={c: r for c, r in w.reasons.items() if c in ids}))
+        if end >= len(w.msg_ids):
+            break
+        start = max(end - config.SPLIT_OVERLAP, start + 1)
+    return pieces
 
 
 def _batches(data: Data, wins: List[Window], char_budget: Optional[int] = None,
@@ -244,14 +292,49 @@ def media_closure(raw: List[dict], data: Data) -> List[dict]:
     return out
 
 
+def halves(data: Data, batch: List[Window]) -> List[List[Window]]:
+    """A batch whose reply was cut: two half batches, or one window cut into two overlapping pieces."""
+    if len(batch) > 1:
+        return [batch[: len(batch) // 2], batch[len(batch) // 2:]]
+    w = batch[0]
+    size = sum(min(len(data.by_id[m]["text"]), config.MAX_MSG_CHARS) + 24 for m in w.msg_ids)
+    pieces = split(data, w, budget=size // 2 + 1, tag="h") if len(w.msg_ids) > config.SPLIT_OVERLAP + 1 else [w]
+    return [[p] for p in pieces] if len(pieces) > 1 else []
+
+
+def _ask_splitting(data: Data, client: LLM, prompts: List[str], maps: List[Dict[str, Tuple[str, Dict[str, str]]]],
+                   wins_by_id: Dict[str, Window]) -> Tuple[List[object], List[Dict[str, Tuple[str, Dict[str, str]]]]]:
+    """Ask every prompt; a reply cut at max_tokens is replaced by replies to its two halves (up to
+    TRUNCATION_SPLITS levels). If it can't be split further, the repaired part of the cut reply is kept."""
+    replies: List[object] = []
+    out_maps: List[Dict[str, Tuple[str, Dict[str, str]]]] = []
+    todo = list(zip(prompts, maps, [0] * len(prompts)))
+    while todo:
+        answers = client.map_json_ex([p for p, _, _ in todo], system=SYSTEM, max_tokens=config.LOOPS_MAX_TOKENS)
+        nxt = []
+        for (prompt, bmap, depth), (reply, cut) in zip(todo, answers):
+            parts = halves(data, [wins_by_id[wid] for wid, _ in bmap.values()]) if cut else []
+            if cut and depth < config.TRUNCATION_SPLITS and parts:
+                for part in parts:
+                    wins_by_id.update({w.wid: w for w in part})
+                    ps, ms = build_prompts(data, part, char_budget=10**9, per_call=10**6)
+                    nxt += [(ps[0], ms[0], depth + 1)]
+                log(f"loops: a reply was cut at max_tokens; retrying it as {len(parts)} smaller calls")
+                continue
+            replies.append(reply)
+            out_maps.append(bmap)
+        todo = nxt
+    return replies, out_maps
+
+
 def extract(data: Data, client: LLM) -> List[dict]:
     cands = candidates.find(data)
-    wins = candidates.windows(data, cands)
-    log(f"loops: {len(cands)} candidates in {len(wins)} windows")
+    wins = [p for w in candidates.windows(data, cands) for p in split(data, w)]
+    log(f"loops: {len(cands)} candidates in {len(wins)} windows (after splitting large ones)")
     prompts, maps = build_prompts(data, wins)
     wins_by_id = {w.wid: w for w in wins}
     with client.stage("loops"):
-        replies = client.map_json(prompts, system=SYSTEM)
+        replies, maps = _ask_splitting(data, client, prompts, maps, wins_by_id)
     raw: List[dict] = []
     for reply, bmap in zip(replies, maps):
         raw += parse_reply(reply, bmap, data, wins_by_id)

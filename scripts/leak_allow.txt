@@ -11,3 +11,11 @@ carpool
 maid
 bhabhi
 chacha
+milestone
+yoga
+# The dev user's first name alone: it appears in the organisers' own public README and brief (user decision,
+# 2026-11-12). Only this token; surnames and other parts of the display name stay flagged.
+arjun
+# Two group-chat titles that are plain kinship words (no one is identified); also used by the generic lexicons.
+family
+siblings

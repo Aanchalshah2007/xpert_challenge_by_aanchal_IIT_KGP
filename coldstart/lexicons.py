@@ -88,3 +88,38 @@ TIME_REF = _words("today", "tonight", "tomorrow", "tmrw", "tmr", "kal", "aaj", "
                   "oct|nov|dec)\\w*", "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\\w*\\s\\d{1,2}", "eod", "deadline",
                   "due", "before", "by")
 MONEY = re.compile(r"(?:₹|rs\.?|inr)\s?\d|\d[\d,]{2,}\s?(?:/-|rs|inr|k|lakh|lakhs|cr)?\b", re.IGNORECASE)
+
+
+# ---- Devanagari (Hindi) and Bengali script: generic request / commitment / question words (no names).
+# Boundaries must cover the scripts' vowel signs, which \w does not match.
+_INDIC = "\u0900-\u09FF"
+
+
+def _indic(*ws: str) -> Pattern[str]:
+    return re.compile(r"(?<![\w" + _INDIC + r"])(?:" + "|".join(ws) + r")(?![\w" + _INDIC + r"])")
+
+
+REQUEST_INDIC = _indic(
+    # Hindi: please, send, do, give, tell me, pay, bring, needed
+    "कृपया", "प्लीज़", "प्लीज", "भेजो", "भेज दो", "भेज दीजिए", "भेजिए", "भेजना", "करो", "कर दो", "कर दीजिए", "कीजिए",
+    "करिए", "करना", "दे दो", "दीजिए", "देना", "बताओ", "बता दो", "बताइए", "बताना", "बता देना", "भुगतान करें",
+    "भुगतान कर दो", "पेमेंट कर दो", "ले आओ", "लाओ", "चाहिए",
+    # Bengali: please, send, do, give, tell me, pay, needed
+    "দয়া করে", "অনুগ্রহ করে", "প্লিজ", "পাঠাও", "পাঠান", "পাঠিয়ে দাও", "পাঠিয়ে দিন", "করো", "করুন", "করে দাও",
+    "করে দিন", "দাও", "দিয়ে দিন", "বলো", "বলুন", "জানাও", "জানান", "টাকা দাও", "টাকা পাঠাও", "পেমেন্ট করুন", "লাগবে",
+)
+COMMIT_INDIC = _indic(
+    # Hindi: I will do / send / give / tell, it will be done
+    "करूंगा", "करूँगा", "करूंगी", "करूँगी", "कर दूंगा", "कर दूँगा", "कर दूंगी", "कर दूँगी", "भेज दूंगा", "भेज दूँगा",
+    "भेज दूंगी", "भेज दूँगी", "दे दूंगा", "दे दूँगा", "बता दूंगा", "बता दूँगा", "हो जाएगा", "करता हूं", "करता हूँ",
+    "करती हूं", "करती हूँ",
+    # Bengali: I will do / send / give / let you know, it will be done
+    "করব", "করবো", "করে দেব", "করে দেবো", "পাঠাব", "পাঠাবো", "পাঠিয়ে দেব", "পাঠিয়ে দেবো", "দেব", "দেবো", "জানাব",
+    "জানাবো", "হয়ে যাবে",
+)
+QUESTION_INDIC = _indic(
+    # Hindi: what / when / where / how / why / who / how much
+    "क्या", "कब", "कहाँ", "कहां", "कैसे", "क्यों", "कौन", "कितना", "कितने", "कितनी",
+    # Bengali: what / when / where / how / why / who / how much
+    "কি", "কী", "কখন", "কবে", "কোথায়", "কেমন", "কেন", "কে", "কত",
+)

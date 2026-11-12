@@ -55,24 +55,9 @@ def sample(data, sample_model: str, cache: Path):
 
 
 def split(data, w: Window, budget: int, tag: str = "") -> List[Window]:
-    """Cut an oversized window into overlapping pieces that each fit the prompt budget."""
-    sizes = [min(len(data.by_id[m]["text"]), loops.config.MAX_MSG_CHARS) + 24 for m in w.msg_ids]
-    if sum(sizes) <= budget:
-        return [w]
-    pieces, start = [], 0
-    while start < len(w.msg_ids):
-        end, size = start, 0
-        while end < len(w.msg_ids) and (end == start or size + sizes[end] <= budget):
-            size += sizes[end]
-            end += 1
-        ids = w.msg_ids[start:end]
-        pieces.append(Window(wid=f"{w.wid}.{tag}{len(pieces) + 1}", chat_id=w.chat_id, msg_ids=ids,
-                             candidates=[c for c in w.candidates if c in ids],
-                             reasons={c: r for c, r in w.reasons.items() if c in ids}))
-        if end >= len(w.msg_ids):
-            break
-        start = max(end - SPLIT_OVERLAP, start + 1)
-    return pieces
+    """Cut an oversized window into overlapping pieces that each fit the prompt budget (now coldstart.loops.split)."""
+    assert loops.config.SPLIT_OVERLAP == SPLIT_OVERLAP
+    return loops.split(data, w, budget, tag)
 
 
 def halve(w: Window) -> List[Window]:
@@ -89,7 +74,21 @@ def v1_settings(data) -> None:
     """Window and prompt settings of the v1 runs (no candidate cap per window, no runtime name), for cache replay."""
     from coldstart import config
     config.WINDOW_MAX_CANDIDATES = 10**6
+    config.PROMPT_COMPACT = False
+    config.LOOPS_USE_ME_NAME = False
+    config.PROMPT_CHAR_BUDGET, config.WINDOWS_PER_CALL = 16000, 10  # batching of the original v1 runs (cache keys)
     data.me_names, data.me_pattern = [], None
+
+
+SYSTEM_V2 = (ROOT / "eval" / "prompt_archive" / "loops_system_v2.txt").read_text(encoding="utf-8")
+
+
+def v2_settings() -> None:
+    """Window and prompt settings of v2 (the slice was built with them): candidate cap 8, compact format, runtime name."""
+    from coldstart import config
+    config.WINDOW_MAX_CANDIDATES = 8
+    config.PROMPT_COMPACT = True
+    config.LOOPS_USE_ME_NAME = True
 
 
 def v1_reply(reply: Any) -> Any:

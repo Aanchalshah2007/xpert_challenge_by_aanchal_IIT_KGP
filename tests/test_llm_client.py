@@ -96,6 +96,26 @@ class Client(InCwd):
         self.assertEqual(fake.seen[0]["response_format"], {"type": "json_object"})
         self.assertIsNone(fake.seen[1]["response_format"])
 
+    def test_one_json_400_does_not_switch_json_mode_off_for_later_calls(self):
+        err = urllib.error.HTTPError("u", 400, "json_validate_failed", {}, None)
+        self.addCleanup(err.close)
+        fake = FakeChat([err, '{"a": 1}', '{"b": 2}'])
+        c = LLM(chat_fn=fake, backoff=0, concurrency=1)
+        self.assertEqual(c.ask_json("q1"), {"a": 1})
+        self.assertEqual(c.ask_json("q2"), {"b": 2})
+        self.assertIsNone(fake.seen[1]["response_format"])  # that call retried without JSON mode
+        self.assertEqual(fake.seen[2]["response_format"], {"type": "json_object"})  # the next call has it again
+
+    def test_repeated_json_400s_switch_json_mode_off(self):
+        errs = [urllib.error.HTTPError("u", 400, "response_format unsupported", {}, None) for _ in range(3)]
+        for e in errs:
+            self.addCleanup(e.close)
+        fake = FakeChat([errs[0], '{"a": 1}', errs[1], '{"a": 1}', errs[2], '{"a": 1}', '{"a": 1}'])
+        c = LLM(chat_fn=fake, backoff=0, concurrency=1)
+        for q in ("q1", "q2", "q3", "q4"):
+            self.assertEqual(c.ask_json(q), {"a": 1})
+        self.assertIsNone(fake.seen[-1]["response_format"])  # after 3 in a row it stays off, and says so in the log
+
     def test_auth_error_not_retried(self):
         err = urllib.error.HTTPError("u", 401, "bad key", {}, None)
         self.addCleanup(err.close)
@@ -184,9 +204,11 @@ class Client(InCwd):
         self.assertEqual(low.ask_json("same"), {"n": 1})  # not served from the plain entry
         self.assertEqual(seen, [{"reasoning_effort": "low"}])
 
-    def test_not_found_not_retried(self):
-        fake = FakeChat([self._http(404), '{"a": 1}'])
-        self.assertIsNone(LLM(chat_fn=fake, backoff=0).ask_json("q"))
+    def test_not_found_not_retried_and_stops_the_run(self):
+        fake = FakeChat([self._http(404), '{"a": 1}', '{"a": 1}'])
+        c = LLM(chat_fn=fake, backoff=0)
+        self.assertIsNone(c.ask_json("q"))
+        self.assertIsNone(c.ask_json("q2"))  # model unavailable: no second attempt
         self.assertEqual(len(fake.seen), 1)
 
     def test_repeated_overload_halves_concurrency_to_floor(self):

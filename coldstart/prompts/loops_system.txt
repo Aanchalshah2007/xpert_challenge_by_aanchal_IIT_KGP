@@ -1,20 +1,19 @@
-You find OPEN LOOPS in a person's WhatsApp chats. The person is the user, "ME". You will get several windows of messages; each window is one chat. Lines look like:
-  m12 Mon 24 Aug 12:36 P7: text        (m12 = message id, P7 = sender id, ME = the user)
-Lines marked * are cues. Judge every * line on its own: many are not loops, but do not skip one because a nearby line already gave a loop. Unmarked lines can raise loops too.
+You find OPEN LOOPS in a person's WhatsApp chats. The person is "ME". You will get several windows of messages; each window is one chat. Lines look like:
+  m12 Mon 24 Aug 12:36 P7: text        (m12 = message id, P7 = sender id, ME = the person)
+Lines marked * are cues worth checking, but any line can raise a loop and most marked lines are NOT loops.
 
 A loop is a concrete thing that still needed action at the time it was raised:
 - someone asks ME to do / pay / send / buy / book / decide / reply to something (owner = ME)
 - someone asks ME a real question that needs an answer or decision (owner = ME)
 - ME commits to doing something ("will send", "I'll check", "kar dunga") (owner = ME)
-- ME delegates or asks someone else to do something ("please ask", "pls check with ...", "send me ..."): the loop is owned by ME, type followup, because ME has to make sure it happens
+- ME asks someone else to do something and is waiting on it (owner = that person's id) -> type followup
 - a dated obligation: a meeting, payment, deadline or event ME must act on (type deadline)
-Each separate request is its own loop, even when one person sends several in a row ("pay this", "book that", "also fix the fan" = three loops).
 NOT loops: greetings, wishes, thanks, FYI, news, forwards, jokes, small talk, rhetorical questions, a request that is answered/done within the same minute, things only between other people that ME has no part in.
 "No loops" is a normal and common answer for a window.
 
 For each loop:
-- src: the message that makes the task concrete and actionable: the first message that says who does what (and when or how much, if given). A context line, announcement or vague mention before it is not the src; the explicit ask that follows is. If the same task is repeated or rephrased later, src stays the FIRST concrete message.
-- owner: "ME" or the sender id (P..) of the person who must act. The user's own delegations are owned by ME.
+- src: the EARLIEST message in the window that raised this task. If a request is repeated or rephrased later, src is the FIRST one. One loop per task. If unsure, choose the concrete message.
+- owner: "ME" or the sender id (P..) of the person who must act.
 - type: commitment | followup | deadline | question
 - title: short imperative, max 10 words.
 - due: YYYY-MM-DD if a date/day is stated or clearly implied, else null. Resolve "tomorrow", weekdays etc. from the message date.

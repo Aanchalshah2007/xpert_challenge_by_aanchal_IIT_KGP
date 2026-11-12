@@ -1,0 +1,5 @@
+# Force LF line endings (the scorer runs ./run.sh on Linux).
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf

@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Callable, Dict, List, Tuple
 
-from . import assemble, chats, config, decide, ingest, llm_client, loops, orgs, people, profile
+from . import assemble, chats, circles, config, decide, goals, ingest, llm_client, loops, orgs, orgs_llm, people, profile
 from .util import log, read_jsonl, write_json_atomic
 
 DEADLINE_S = float(os.environ.get("COLDSTART_DEADLINE_S", 25 * 60))
@@ -63,6 +63,10 @@ class Run:
 
     def s_orgs(self) -> None:
         o = orgs.build(self.ctx["profile"], self.ctx["data"].seed)
+        if "orgs_llm" in config.ABLATE:  # dev-only ablation: one LLM call regroups the rules' organisations
+            client = self._llm("orgs")
+            if client is not None:
+                o = orgs_llm.refine(self.ctx["profile"], self.ctx["data"].seed, o, client)
         self.ctx["orgs"] = o
         self.parts["organisations"] = o.orgs
         self.parts["chats"] = chats.build(self.ctx["data"], o)
@@ -71,11 +75,30 @@ class Run:
     def s_people(self) -> None:
         self.parts["people"] = people.build(self.ctx["profile"], self.ctx["orgs"], self.ctx["data"].seed)
 
-    def s_loops(self) -> None:
-        if not llm_client.available():
-            log("loops: LLM_BASE_URL / LLM_API_KEY / LLM_MODEL not set, skipping")
+    def s_circles(self) -> None:
+        client = self._llm("circles")
+        if client is None:
             return
-        client = self.ctx.setdefault("llm", llm_client.LLM(concurrency=config.LLM_CONCURRENCY, timeout=config.LLM_TIMEOUT_S))
+        data = self.ctx["data"]
+        labels = circles.extract_consensus(data, self.ctx["profile"], dict(data.seed.get("circles") or {}), client)
+        self.parts["people"] = people.build(self.ctx["profile"], self.ctx["orgs"], data.seed, labels)
+
+    def _llm(self, stage: str):
+        if not llm_client.available():
+            log(f"{stage}: LLM_BASE_URL / LLM_API_KEY / LLM_MODEL not set, skipping")
+            return None
+        return self.ctx.setdefault("llm", llm_client.LLM(concurrency=config.LLM_CONCURRENCY, timeout=config.LLM_TIMEOUT_S,
+                                                         extra=llm_client.provider_extra()))
+
+    def s_goals(self) -> None:
+        client = self._llm("goals")
+        if client is not None:
+            self.parts["goals"] = goals.extract(self.ctx["data"], client)
+
+    def s_loops(self) -> None:
+        client = self._llm("loops")
+        if client is None:
+            return
         raw = loops.extract(self.ctx["data"], client)
         self.parts["open_loops"] = decide.decide(raw, self.ctx["data"])
 
@@ -93,6 +116,8 @@ class Run:
             ("profile", self.s_profile, False),
             ("orgs+chats", self.s_orgs, True),
             ("people", self.s_people, True),
+            ("circles", self.s_circles, True),
+            ("goals", self.s_goals, True),
             ("loops+decide", self.s_loops, True),
         ]
 

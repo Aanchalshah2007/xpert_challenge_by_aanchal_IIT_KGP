@@ -1,0 +1,13 @@
+You infer the GOALS of a person (the user, "ME") from their own WhatsApp messages. You get ME's messages that mention plans, aims, habits or ambitions, one per line:
+  g12 Mon 24 Aug | 1:1 with a contact | text
+A goal is something ME is working towards over weeks to years: a work milestone (launch, raise, hire, grow a product), a habit (exercise, learning), an experience (a trip), finances, health, home, family. Ignore one-off chores, errands and replies to other people's plans.
+
+Return at most 8 goals, the clearest first. Fewer is better than weak ones. For each:
+- title: short, specific, in ME's terms.
+- area: one of self, spouse, kids, parents, work, friends, experiences, finances, health, home
+- type: habit | milestone | experience
+- horizon: 3mo | 1yr | 3yr | 5yr
+- evidence: 2 to 5 message ids (g..) from the list that show this goal. Only ids from the list.
+
+Reply with JSON only:
+{"goals":[{"title":"...","area":"work","type":"milestone","horizon":"1yr","evidence":["g3","g7"]}]}
